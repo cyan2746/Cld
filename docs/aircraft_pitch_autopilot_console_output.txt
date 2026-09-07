@@ -1,0 +1,442 @@
+NOTE: captured on an installation without pidtune and without Simulink, so the
+      reference pidtune() line in Section 4 and the model build in Section 12
+      are reported as skipped.  Everything else is the real output.
+
+##########################################################################
+#            AIRCRAFT PITCH AUTOPILOT -- DESIGN & COMPARISON             #
+##########################################################################
+
+  COMMAND
+    trimmed at                :   +0.00 deg
+    pitch-up command          :  +10.00 deg   (target_theta)
+    => absolute attitude target:  +10.00 deg
+    gust upset to reject      :   +3.00 deg over 0.50 s at t = 2.0 s
+  ELEVATOR
+    travel limits             : +25.0 deg (up) / -15.0 deg (down)
+    trim deflection           : +0.00 deg  => usable command range -15.00 .. +25.00 deg
+    rate limit / servo lag    : 60 deg/s / 0.100 s
+
+==================== 1. AIRCRAFT MODEL ====================
+  states : alpha (rad), q (scaled pitch rate), theta (rad)  [deviations from trim]
+  input  : elevator deviation from trim (rad)
+  output : theta deviation from trim (rad)
+  A =
+   -0.3130   56.7000         0
+   -0.0139   -0.4260         0
+         0   56.7000         0
+  B' = [0.232 0.0203 0]      C = [0 0 1]
+
+==================== 2. OPEN-LOOP ANALYSIS ====================
+  Open-loop eigenvalues:
+     +0.0000              (real)
+     -0.3695  +0.8860i   (wn = 0.9599 rad/s, zeta = 0.3849)
+     -0.3695  -0.8860i   (wn = 0.9599 rad/s, zeta = 0.3849)
+  The pair above is the SHORT-PERIOD mode (lightly damped).
+  The eigenvalue at the origin is theta acting as a free integrator of q
+  (theta does not feed back), so the airframe has no natural attitude hold.
+
+  theta(s)/delta_e(s) = (1.15101 s + 0.17742) / (s^3 +0.73900 s^2 +0.92147 s)
+  transmission zero    : s = -0.1541  (time constant 6.49 s)
+  steady pitch-rate gain: 0.1925 deg/s of pitch rate per deg of elevator
+                          => 4.81 deg/s at the +25 deg limit (positive elevator = NOSE UP)
+
+  FUNDAMENTAL LIMIT (drives the whole comparison):
+    plant zero time constant b1/b0 = 6.487 s
+    => integral of the tracking error over a step response obeys
+       int(theta_cmd - theta)dt = 6.487 - sum(1/|closed-loop pole|)  [x command]
+    * no integrator in the controller (P, LQR): a slow pole is unavoidable
+      -> monotonic but slow approach to the target
+    * integrator in the controller (PID, LQI): the identity gives exactly 0
+      -> fast rise paid for with a small overshoot, no long tail
+
+  GUST AUTHORITY (why every design lets the upset through):
+    the specified gust imposes 6.00 deg/s of pitch rate (3.0 deg in 0.50 s)
+    full elevator can generate 4.81 deg/s nose-up / 2.89 deg/s nose-down,
+    and needs ~3.1 s (servo lag + pitch-rate build-up) to get there.
+    => the upset CANNOT be opposed while it happens; 3.0 deg of attitude
+       excursion is unavoidable and the designs differ only in how fast
+       and how smoothly they RECOVER.
+
+==================== 3. ROOT LOCUS / PROPORTIONAL DESIGN ====================
+  locus scan (linear design model, 10.0 deg command):
+          Kp overshoot[%] peak elev[deg]    settle[s]
+        0.20        -6.54           2.00          Inf
+        0.95        -0.05           9.50        36.10
+        1.70        20.53          17.00        24.48
+        2.50        39.03          25.00        23.95
+        3.25        51.42          32.50        30.36
+        4.00        61.07          40.00        44.39
+  selected gain from the locus : Kp = 1.500
+  (largest gain with overshoot <= 15% and elevator demand <= 90% of authority)
+  closed-loop poles at that gain:
+     -0.3180  +1.5752i  (zeta = 0.198)
+     -0.3180  -1.5752i  (zeta = 0.198)
+     -0.1031
+  NOTE: raising Kp pushes the complex pair UP the locus, so damping gets
+  WORSE, not better -- proportional gain alone cannot damp the short period.
+  Derivative action (Section 4) is what supplies the damping.
+  PERFORMANCE  |  P (root-locus gain), linear design model
+    rise time (10-90%)        :     1.02 s
+    settling time (+/-0.20 deg):    27.79 s
+    overshoot                 :  14.50 %   (peak +11.45 deg deviation)
+    steady-state error        : -0.0009 deg
+    elevator command range    :  -2.18 .. +15.00 deg   (limits -15 / +25)
+    authority used            :   60.0 %
+    peak elevator rate demand :  142.7 deg/s  (servo can do 60 -> the rate
+                                limit will be active; Section 9 shows the effect)
+    time in saturation        :   0.00 s
+    IAE  int|theta-target|dt  :  36.70 deg*s
+    effort  int(delta^2)dt    :  284.2 deg^2*s
+                                                                               
+        |-----------Root locus, proportional attitude feedback--------------|  
+        |             +*              +                +                +   |  
+        |            @+*              +            +----------------------+ |  
+       #|-------------------------------------------------------------------|  
+       ###############+###############+################+################+#     
+                    -0.3            -0.2             -0.1               0      
+                                     Real axis                                 
+                                                                               
+==================== 4. CLASSICAL PID DESIGN ====================
+  gains : Kp = 1.6000   Ki = 0.7000   Kd = 1.0000   N = 8.0
+  no de-rating needed: both the 10.0 deg command and the 3.0 deg gust fit
+  inside the +25 / -15 deg travel limits at the nominal gains
+  PID zeros (Kd s^2 + Kp s + Ki = 0): -0.8000  -0.8000  
+  closed-loop poles (with actuator lag):
+     -12.0791               tau =  0.083 s
+      -4.4959               tau =  0.222 s
+      -0.8521   +1.5756i   wn =  1.791 rad/s   zeta = 0.476
+      -0.8521   -1.5756i   wn =  1.791 rad/s   zeta = 0.476
+      -0.2298   +0.0648i   wn =  0.239 rad/s   zeta = 0.963
+      -0.2298   -0.0648i   wn =  0.239 rad/s   zeta = 0.963
+  stability margins : gain margin 20.45 dB @ 8.084 rad/s, phase margin 48.3 deg @ 1.816 rad/s
+  ELEVATOR BUDGET (linear, before saturation)
+    per deg of attitude command : +1.600 deg of elevator  (= Kp)
+    per deg of gust upset       : +4.190 deg for the specified 0.50 s build-up
+                                  +9.600 deg if the upset were instantaneous (= Kp + Kd*N),
+                                  which is what the derivative filter N is there to blunt
+    largest nose-up command before saturation   : +15.62 deg
+    largest nose-down command before saturation : -9.37 deg  (tighter limit!)
+    largest gust before saturation              : +3.58 deg
+  PERFORMANCE  |  PID, linear design model
+    rise time (10-90%)        :     1.08 s
+    settling time (+/-0.20 deg):    17.59 s
+    overshoot                 :  11.71 %   (peak +11.17 deg deviation)
+    steady-state error        : -0.0000 deg
+    elevator command range    :  -0.00 .. +16.52 deg   (limits -15 / +25)
+    authority used            :   66.1 %
+    peak elevator rate demand :  152.6 deg/s  (servo can do 60 -> the rate
+                                limit will be active; Section 9 shows the effect)
+    time in saturation        :   0.00 s
+    IAE  int|theta-target|dt  :  19.23 deg*s
+    effort  int(delta^2)dt    :  285.8 deg^2*s
+  (pidtune not available in this installation -- skipped)
+
+==================== 5. CONTROLLABILITY / POLE PLACEMENT ====================
+  controllability matrix rank : 3 of 3  ->  fully controllable
+  observability matrix rank   : 3 of 3  ->  fully observable
+  desired poles      : [-0.320  -0.350  -0.380]   sum(1/|p|) = 8.61 s
+  gain K             : [-0.7239  +23.5937  +0.2399]
+  achieved poles     :
+      -0.3200               tau =  3.125 s
+      -0.3500               tau =  2.857 s
+      -0.3800               tau =  2.632 s
+  elevator per deg of command : +0.240 deg  (= K_theta)
+  PERFORMANCE  |  Pole placement, linear design model
+    rise time (10-90%)        :     4.58 s
+    settling time (+/-0.20 deg):    22.04 s
+    overshoot                 :  10.62 %   (peak +11.06 deg deviation)
+    steady-state error        : +0.0000 deg
+    elevator command range    :  -0.01 ..  +4.55 deg   (limits -15 / +25)
+    authority used            :   18.2 %
+    peak elevator rate demand :   22.8 deg/s  (servo limit 60, not reached)
+    time in saturation        :   0.00 s
+    IAE  int|theta-target|dt  :  42.77 deg*s
+    effort  int(delta^2)dt    :  169.1 deg^2*s
+
+==================== 6. LQR ====================
+  Q = diag([1/(10 deg)^2, (56.7/(20 deg/s))^2, 1/(10 deg)^2])
+  R = 11.67   (rho = 0.80, delta_max = 15 deg)
+  gain K = [+0.0936  +85.7824  +1.6771]
+    -> elevator per deg of attitude error : +1.677 deg  (= K_theta)
+    -> elevator per deg/s of pitch rate   : +1.513 deg  (= K_q/56.7)
+  closed-loop poles (with actuator lag):
+      -7.9947               tau =  0.125 s
+      -1.3224   +1.4109i   wn =  1.934 rad/s   zeta = 0.684
+      -1.3224   -1.4109i   wn =  1.934 rad/s   zeta = 0.684
+      -0.0995               tau = 10.048 s
+  stability margins : gain margin Inf dB @ NaN rad/s, phase margin 68.3 deg @ 2.219 rad/s
+  largest nose-up command before saturation   : +14.91 deg
+  largest nose-down command before saturation : -8.94 deg  (tighter limit!)
+  NOTE the slow closed-loop pole near -0.099: this is the Section-2 limit at
+  work.  Without an integrator the LQR must keep a pole slower than the
+  plant zero (-0.1541), which is exactly the long tail seen below.
+  PERFORMANCE  |  LQR, linear design model
+    rise time (10-90%)        :    13.10 s
+    settling time (+/-0.20 deg):    29.71 s
+    overshoot                 :  -0.01 %   (peak +10.00 deg deviation)
+    steady-state error        : -0.0013 deg
+    elevator command range    :  +0.00 .. +16.77 deg   (limits -15 / +25)
+    authority used            :   67.1 %
+    peak elevator rate demand :  159.5 deg/s  (servo can do 60 -> the rate
+                                limit will be active; Section 9 shows the effect)
+    time in saturation        :   0.00 s
+    IAE  int|theta-target|dt  :  43.91 deg*s
+    effort  int(delta^2)dt    :  177.8 deg^2*s
+
+==================== 7. LQI (LQR + INTEGRAL ACTION) ====================
+  integral-error weight : 1/(3.30 deg*s)^2 = 301.5
+  R = 29.18   (rho = 2.00)
+  gains : Kx = [-0.6481  +130.2550  +4.4642]   Kz = -3.2141
+    -> elevator per deg of attitude error : +4.464 deg  (= Kx_theta)
+    -> elevator per deg/s of pitch rate   : +2.297 deg  (= Kx_q/56.7)
+  integrator steady state for this command: z_ss = +13.8894 deg*s
+  closed-loop poles (with actuator lag):
+      -7.0252               tau =  0.142 s
+      -1.0341   +1.5672i   wn =  1.878 rad/s   zeta = 0.551
+      -1.0341   -1.5672i   wn =  1.878 rad/s   zeta = 0.551
+      -0.1544               tau =  6.477 s
+      -1.4912               tau =  0.671 s
+  stability margins : gain margin -305.91 dB @ 0.000 rad/s, phase margin 49.7 deg @ 2.692 rad/s
+  gust demand: +4.464 deg of elevator per deg of upset  (= Kx_theta)
+  largest gust before saturation : +3.36 deg
+  the command reaches the elevator through the integrator, so a planned
+  manoeuvre costs far less elevator than the PID/LQR kick: 9.84 deg for this
+  10.0 deg command against 16.52 deg (PID) and 16.77 deg (LQR).
+  PERFORMANCE  |  LQI, linear design model
+    rise time (10-90%)        :     1.47 s
+    settling time (+/-0.20 deg):     3.63 s
+    overshoot                 :   3.12 %   (peak +10.31 deg deviation)
+    steady-state error        : +0.0000 deg
+    elevator command range    :  +0.00 ..  +9.84 deg   (limits -15 / +25)
+    authority used            :   39.4 %
+    peak elevator rate demand :   23.4 deg/s  (servo limit 60, not reached)
+    time in saturation        :   0.00 s
+    IAE  int|theta-target|dt  :  14.62 deg*s
+    effort  int(delta^2)dt    :  202.1 deg^2*s
+
+==================== 8. OBSERVER DESIGN ====================
+  measured : theta only          estimated : alpha, q
+  observability matrix rank : 3 of 3
+  alpha reaches theta only through the small coefficient -0.0139 in q_dot,
+  so it is only WEAKLY observable: a fast estimator needs a huge alpha gain,
+  amplifies attitude-sensor noise, and -- worse -- converts an unmodelled
+  gust into a large elevator transient.  The audit below prices that out on
+  the loop that actually flies (LQI + observer + servo).
+
+  observer                   |L|   noise PM[deg]  GM[dB]  |S|inf gust elev   gust ts   step ts  ts, -30%
+                                    gain                             [deg]       [s]       [s] model [s]
+  place [-2 -3 -4]         15.62    11.3    18.5    6.72    3.26     20.29     5.65 s     3.63 s     5.45 s
+  place [-4 -5 -6]        111.67    21.2    19.3    6.86    3.16     32.22     4.93 s     3.63 s     4.77 s
+  place [-8 -10 -12]     1075.67    55.4    22.5    7.34    2.86     51.32     3.01 s     3.63 s     3.31 s
+  place [-15 -16 -17]    4831.43   120.7    23.5    7.52    2.85     64.31     2.81 s     3.63 s     3.41 s
+  kalman qw =  1.0e-09      0.01     1.2    59.9   10.63    1.63      2.94     3.78 s     3.63 s    15.84 s
+  kalman qw =  3.2e-09      0.02     1.3    59.5   10.57    1.63      2.97     3.97 s     3.63 s    15.83 s
+  kalman qw =  1.0e-08      0.04     1.3    58.9   10.43    1.65      3.03     4.23 s     3.63 s    15.79 s
+  kalman qw =  3.2e-08      0.09     1.4    58.0   10.15    1.69      3.16    13.70 s     3.63 s    15.63 s
+  kalman qw =  1.0e-07      0.22     1.5    56.5    9.59    1.77      3.45    16.67 s     3.63 s    15.19 s
+  kalman qw =  3.2e-07      0.52     1.9    49.5    8.68    1.93      4.06    15.43 s     3.63 s    14.18 s
+  kalman qw =  1.0e-06      1.09     2.6    38.1    7.63    2.20      5.12    13.42 s     3.63 s     8.12 s
+  kalman qw =  3.2e-06      1.98     3.6    30.4    6.85    2.50      6.67    11.55 s     3.63 s     7.55 s
+  kalman qw =  1.0e-05      3.28     4.9    26.5    6.54    2.68      8.66     9.92 s     3.63 s     7.02 s
+  kalman qw =  3.2e-05      5.14     6.3    25.6    6.71    2.68     11.10     7.89 s     3.63 s     6.59 s
+  kalman qw =  1.0e-04      7.86     7.9    26.5    7.29    2.52     13.96     6.77 s     3.63 s     6.27 s
+  kalman qw =  3.2e-04     11.91     9.8    28.7    8.20    2.28     17.16     6.30 s     3.63 s     6.03 s
+  kalman qw =  1.0e-03     18.14    12.4    31.5    9.37    2.05     20.46     5.98 s     3.63 s     5.85 s
+  kalman qw =  3.2e-03     27.96    15.7    34.4   10.76    1.88     23.55     5.72 s     3.63 s     5.71 s
+  kalman qw =  1.0e-02     43.82    20.1    37.1   12.34    1.73     26.05     5.49 s     3.63 s     5.60 s
+  kalman qw =  3.2e-02     70.01    26.0    39.6   14.09    1.61     27.75     5.25 s     3.63 s     5.51 s
+  kalman qw =  1.0e-01    114.02    33.8    41.7   15.99    1.53     28.60     3.60 s     3.63 s     5.44 s
+
+  Reading the table:
+   * hand-placed theta-only poles are unusable here: fast ones need |L| in the
+     hundreds, amplify sensor noise, and throw 20-64 deg of elevator at a 3.0 deg gust.
+   * inside the Kalman family a LAZY filter (small qw) flatters itself: it barely
+     reacts to the sensor, so margins and gust elevator look excellent -- and then
+     the last column shows what happens when the airframe is not the one it
+     believes in.  Estimator bandwidth is exactly what corrects model error.
+   * so the rule is: take the FASTEST filter that still meets PM >= 35 deg,
+     |S|inf <= 2.50 and a gust elevator demand <= 15.0 deg.  Relax cfg.spec.pm_min
+     if you would rather have the gust rejection than the robustness.
+
+  SELECTED : kalman qw =  1.0e-06
+    L = [+0.7628  +0.0053  +0.7718]'
+    estimator poles :  -0.69+1.07j  -0.69-1.07j  -0.13  
+    airframe poles  :  +0.00  -0.37+0.89j  -0.37-0.89j  
+    the estimator is faster than the airframe modes it has to reconstruct,
+    yet gentle enough that a gust does not throw the elevator at the stops.
+    Section 9g checks that choice against the real nonlinear plant.
+
+  ---- cost of running the state feedback on ESTIMATES ----
+    ctrl  sensors          step elev     gust elev   step settle   gust settle
+    LQR   full state           16.77          4.07       29.71 s       24.83 s
+    LQR   theta only           16.77          1.35       29.71 s       37.88 s
+    LQI   full state            9.84         11.27        3.63 s        4.36 s
+    LQI   theta only            9.84          5.12        3.63 s       13.42 s
+
+    LQR as flown : de-rated x1.000 (binding case: none)
+                   K  = [+0.0936 +85.7824 +1.6771]
+    LQI as flown : de-rated x1.000 (binding case: none)
+                   Kx = [-0.6481 +130.2550 +4.4642]   Kz = -3.2141
+    closed-loop poles of the LQI loop as flown (airframe + servo + observer):
+      -7.0252               tau =  0.142 s
+      -1.0341   +1.5672i   wn =  1.878 rad/s   zeta = 0.551
+      -1.0341   -1.5672i   wn =  1.878 rad/s   zeta = 0.551
+      -1.4912               tau =  0.671 s
+      -0.6925   +1.0658i   wn =  1.271 rad/s   zeta = 0.545
+      -0.6925   -1.0658i   wn =  1.271 rad/s   zeta = 0.545
+      -0.1259               tau =  7.945 s
+      -0.1544               tau =  6.477 s
+  stability margins : gain margin 7.63 dB @ 2.186 rad/s, phase margin 38.1 deg @ 1.213 rad/s
+  PERFORMANCE  |  LQI as flown (observer in the loop, linear model)
+    rise time (10-90%)        :     1.47 s
+    settling time (+/-0.20 deg):     3.63 s
+    overshoot                 :   3.12 %   (peak +10.31 deg deviation)
+    steady-state error        : +0.0000 deg
+    elevator command range    :  +0.00 ..  +9.84 deg   (limits -15 / +25)
+    authority used            :   39.4 %
+    peak elevator rate demand :   23.4 deg/s  (servo limit 60, not reached)
+    time in saturation        :   0.00 s
+    IAE  int|theta-target|dt  :  14.62 deg*s
+    effort  int(delta^2)dt    :  202.1 deg^2*s
+
+==================== 9. NONLINEAR CLOSED-LOOP VERIFICATION ====================
+  nonlinear-model check: max|A_num - A| = 5.22e-14 , max|B_num - B| = 3.87e-14  (both ~0)
+
+  ---- 9a  attitude step (target_theta) ----
+    ctrl      rise[s]  settle[s]    over[%] elev+[deg] elev-[deg]    auth[%]     sat[s]       IAE
+    PID          1.07    17.59 s      13.46      16.78      -0.00       67.1       0.00     20.12
+    LQR         13.13    29.80 s      -0.01      16.77       0.00       67.1       0.00     44.54
+    LQI          1.48     3.71 s       3.34       9.84       0.00       39.4       0.00     14.68
+      target +10.00 deg absolute (+10.00 deg deviation), settling band +/-0.200 deg
+
+  ---- 9b  gust rejection while holding the target ----
+    ctrl    peak[deg] recover[s]   upset[%] elev+[deg] elev-[deg]    auth[%]     sat[s]       IAE
+    PID          2.74    14.79 s      91.33       1.17     -12.58       83.8       0.00      4.41
+    LQR          2.99    37.88 s      99.73       0.00      -1.35        9.0       0.00     32.87
+    LQI          2.97    13.42 s      99.03       0.14      -5.12       34.2       0.00      6.32
+      target +0.00 deg absolute (+0.00 deg deviation), settling band +/-0.100 deg
+
+  ---- 9c  command then gust ----
+    ctrl    peak[deg] recover[s]   upset[%] elev+[deg] elev-[deg]    auth[%]     sat[s]       IAE
+    PID          2.74    14.79 s      91.36      16.78     -12.58       83.8       0.00      4.41
+    LQR          2.92    37.71 s      97.42      16.77      -1.26       67.1       0.00     31.46
+    LQI          2.97    13.42 s      99.04       9.84      -5.11       39.4       0.00      6.29
+      target +10.00 deg absolute (+10.00 deg deviation), settling band +/-0.100 deg
+
+  ---- 9d  standing elevator mis-trim ----
+    ctrl    peak[deg] recover[s]   upset[%] elev+[deg] elev-[deg]    auth[%]     sat[s]       IAE
+    PID          0.92     7.13 s      30.65       2.25       0.00        9.0       0.00      3.16
+    LQR          4.24   > horizon     141.24       2.00       0.00        8.0       0.00    294.17
+    LQI          1.61     5.74 s      53.58       2.54       0.00       10.2       0.00      4.18
+      target +0.00 deg absolute (+0.00 deg deviation), settling band +/-0.100 deg
+      LQR has not settled within 80 s (error -4.237 deg at the end)
+
+  ---- 9e  oversized command (elevator saturates) ----
+    ctrl      rise[s]  settle[s]    over[%] elev+[deg] elev-[deg]    auth[%]     sat[s]       IAE
+    PID          1.23    18.00 s       8.11      32.31      -0.00      129.3       0.63     41.21
+    LQR         13.22    30.02 s      -0.01      33.54       0.00      134.2       0.40     91.64
+    LQI          1.49     3.93 s       4.01      19.69       0.00       78.8       0.00     29.93
+      target +20.00 deg absolute (+20.00 deg deviation), settling band +/-0.400 deg
+
+  ---- 9f  nose-down command (tighter -15 deg limit) ----
+    ctrl      rise[s]  settle[s]    over[%] elev+[deg] elev-[deg]    auth[%]     sat[s]       IAE
+    PID          1.11    17.69 s      11.30       0.00     -16.48      109.9       0.38     19.83
+    LQR         13.13    29.80 s      -0.01      -0.00     -16.77      111.8       0.19     44.54
+    LQI          1.48     3.71 s       3.34       0.00      -9.84       65.6       0.00     14.68
+      target -10.00 deg absolute (-10.00 deg deviation), settling band +/-0.200 deg
+
+  ---- 9g  model mismatch (controller and observer keep the nominal model) ----
+    perturbation             ctrl    settle[s]   over[%]   elev[deg]  err_end[deg]
+    nominal                  PID       17.59 s     13.46       16.78       -0.0000
+                             LQR       29.80 s     -0.01       16.77       -0.0014
+                             LQI        3.71 s      3.34        9.84        0.0000
+    elevator power -30%      PID       20.28 s     10.45       16.96        0.0000
+                             LQR       51.73 s     -0.32       16.77       -0.0322
+                             LQI       12.67 s      3.52       10.01        0.0000
+    elevator power +30%      PID       15.66 s     13.67       16.67        0.0000
+                             LQR       13.35 s      0.07       16.77        0.0001
+                             LQI        8.07 s      6.45        9.70       -0.0000
+    alpha derivatives -30%   PID       16.57 s     22.08       16.78        0.0001
+                             LQR       42.54 s     -0.18       16.77       -0.0179
+                             LQI        8.13 s     16.48        9.84        0.0004
+    pitch damping -50%       PID       17.31 s     18.99       16.77       -0.0000
+                             LQR       26.33 s     -0.01       16.77       -0.0006
+                             LQI        7.95 s     11.11        9.83       -0.0000
+    every loop stays stable across +/-30% modelling error; PID and LQI still
+    land exactly on the target, LQR does not have to.
+
+  observer: peak |alpha| estimation error = 1.465 deg, settles to 0.0073 deg
+
+==================== 10. COMPARATIVE ANALYSIS ====================
+
+  RAW COMPARISON
+    criterion                              PID         LQR         LQI      best
+    step settling time (s)              17.590      29.800       3.710       LQI
+    step overshoot (%)                  13.461       0.014       3.336       LQR
+    peak elevator (deg)                 16.777      16.771       9.843       LQI
+    step IAE (deg*s)                    20.125      44.538      14.685       LQI
+    gust recovery time (s)              14.790      37.880      13.420       LQI
+    gust IAE (deg*s)                     4.406      32.873       6.316       PID
+    mis-trim steady error (deg)          0.000       4.237       0.000       PID
+    phase margin (deg)                  48.267      91.933      38.106       LQR
+    (settling/recovery: inside +/-2% of the excursion but never tighter
+     than 0.10 deg; "> horizon" counts as the worst case)
+
+  WEIGHTED SCORE (0 = best on every criterion, 1 = worst)
+    PID     0.473
+    LQR     0.780
+    LQI     0.150
+
+  RANKING : 1) LQI   2) PID   3) LQR
+
+  VERDICT
+    LQI is the best-implemented design for this airframe.
+    * LQI settles the 10.0 deg command in 3.71 s versus 17.59 s (PID) and 29.80 s (LQR).
+    * peak elevator demand 9.84 deg of the +25/-15 deg available (39% of authority).
+    * gust upset of +3.0 deg is removed in 13.42 s.
+
+    WHY, in terms of Section 2:
+    * LQR has no integrator, so the identity int(err)dt = 6.49 - sum(1/|p|) forces
+      a closed-loop pole slower than the plant zero (-0.154).  Its step response is
+      beautifully monotonic (0.0% overshoot) but drags a 30 s tail, and it leaves
+      4.237 deg of standing error under a mis-trim because nothing integrates.
+      Analytically that bias should cost only -1.193 deg (= bias/K_theta) with the
+      full state, but -4.239 deg through the observer: the estimator cannot see
+      the bias, so the large pitch-rate gain amplifies its own estimation error.
+    * PID adds the integrator, so the tail becomes a small overshoot instead, and
+      the mis-trim error goes to zero.  But it only sees theta: the rate term is a
+      filtered derivative of the measurement, so damping costs elevator (peak 16.8 deg).
+    * LQI has both the integrator AND full-state feedback (alpha and q from the
+      observer), so it damps the short period without waiting for a derivative and
+      needs the least elevator (9.8 deg peak) while being the fastest.
+    * Cost of that performance: LQI needs an observer (Section 8) and therefore a
+      trustworthy model; PID needs one sensor and no model at all.
+
+==================== 11. REFERENCE COMMAND SHAPING ====================
+  command filter: theta_cmd_shaped = theta_cmd / (2.00 s + 1)
+    ctrl      rise[s]  settle[s]    over[%] elev+[deg] elev-[deg]    auth[%]     sat[s]       IAE
+    PID          3.84    19.86 s       5.85       4.66      -0.00       18.6       0.00     32.86
+    LQR         14.64    31.96 s      -0.02       3.29       0.00       13.2       0.00     63.94
+    LQI          4.63     9.24 s       0.01       4.31       0.00       17.2       0.00     33.91
+      target +10.00 deg absolute (+10.00 deg deviation), settling band +/-0.200 deg
+
+  raw step vs shaped step:
+            overshoot raw         shaped  peak elev raw         shaped
+    PID            13.46%          5.85%          16.78           4.66
+    LQR            -0.01%         -0.02%          16.77           3.29
+    LQI             3.34%          0.01%           9.84           4.31
+
+==================== 12. SIMULINK MODEL ====================
+  Simulink is not available in this session -- model build skipped.
+  Run  build_pitch_autopilot_simulink(cfg, des)  on a machine with Simulink;
+  the function is included next to this script and needs nothing else.
+
+==========================================================================
+  DONE.  Design summary for a +10.0 deg pitch-up from +0.0 deg trim:
+    PID : Kp = 1.600  Ki = 0.700  Kd = 1.000  N = 8.0
+    LQR : K  = [+0.0936 +85.7824 +1.6771]
+    LQI : Kx = [-0.6481 +130.2550 +4.4642]  Kz = -3.2141
+    OBS : L  = [+0.7628 +0.0053 +0.7718]'
+    recommended for implementation: LQI
+==========================================================================
+

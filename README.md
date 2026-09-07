@@ -73,3 +73,10 @@ python3 -m unittest -v
 of `pi(10^k)` and the 10001st prime, Carmichael numbers and base-2 strong
 pseudoprimes, round-tripping every factorization back to its product, and
 `divisors` against brute force.
+
+## Also in this repository
+
+`matlab/` holds an unrelated project: an **aircraft pitch / longitudinal
+autopilot** design suite (root locus/PID, pole placement, LQR, LQI, observer,
+nonlinear verification, comparative analysis and a programmatically built
+Simulink model). See [docs/aircraft_pitch_autopilot.md](docs/aircraft_pitch_autopilot.md).
